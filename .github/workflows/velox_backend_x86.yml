@@ -16,6 +16,7 @@
 name: Velox Backend (x86)
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - '.github/workflows/velox_backend_x86.yml'
