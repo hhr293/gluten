@@ -236,6 +236,43 @@ target_link_libraries(gluten PUBLIC Arrow::arrow
                                     Arrow::arrow_bundled_dependencies)
 target_link_libraries(gluten PRIVATE google::glog)
 
+# Arrow may be built against system shared libraries for LZ4, ZSTD, snappy,
+# and zlib rather than bundling them. Explicitly link these libraries so that
+# libgluten.so does not have unresolved symbols when linking test executables.
+find_package(ZLIB)
+if(ZLIB_FOUND)
+  target_link_libraries(gluten PRIVATE ZLIB::ZLIB)
+endif()
+# CMake built-in Find modules for LZ4, ZSTD, and snappy are only available in
+# newer CMake versions than this project requires (3.16). Use find_library with
+# manually created imported targets for consistency.
+find_library(LZ4_LIBRARY NAMES lz4)
+if(LZ4_LIBRARY AND NOT TARGET LZ4::lz4)
+  add_library(LZ4::lz4 UNKNOWN IMPORTED)
+  set_target_properties(LZ4::lz4 PROPERTIES IMPORTED_LOCATION "${LZ4_LIBRARY}")
+endif()
+if(TARGET LZ4::lz4)
+  target_link_libraries(gluten PRIVATE LZ4::lz4)
+endif()
+find_library(ZSTD_LIBRARY NAMES zstd)
+if(ZSTD_LIBRARY AND NOT TARGET ZSTD::zstd)
+  add_library(ZSTD::zstd UNKNOWN IMPORTED)
+  set_target_properties(ZSTD::zstd PROPERTIES IMPORTED_LOCATION
+                                               "${ZSTD_LIBRARY}")
+endif()
+if(TARGET ZSTD::zstd)
+  target_link_libraries(gluten PRIVATE ZSTD::zstd)
+endif()
+find_library(SNAPPY_LIBRARY NAMES snappy)
+if(SNAPPY_LIBRARY AND NOT TARGET Snappy::snappy)
+  add_library(Snappy::snappy UNKNOWN IMPORTED)
+  set_target_properties(Snappy::snappy PROPERTIES IMPORTED_LOCATION
+                                                   "${SNAPPY_LIBRARY}")
+endif()
+if(TARGET Snappy::snappy)
+  target_link_libraries(gluten PRIVATE Snappy::snappy)
+endif()
+
 install(TARGETS gluten DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/resources/libhdfs.so
         DESTINATION ${LIBHDFS3_DESTINATION})
