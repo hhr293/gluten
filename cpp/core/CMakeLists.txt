@@ -234,6 +234,26 @@ target_link_libraries(gluten PUBLIC Arrow::arrow
                                     Arrow::arrow_bundled_dependencies)
 target_link_libraries(gluten PRIVATE google::glog)
 
+# Arrow may be built against system shared libraries for LZ4, ZSTD, snappy,
+# and zlib rather than bundling them. Explicitly link these libraries so that
+# libgluten.so does not have unresolved symbols when linking test executables.
+find_package(ZLIB)
+if(ZLIB_FOUND)
+  target_link_libraries(gluten PRIVATE ZLIB::ZLIB)
+endif()
+find_library(LZ4_LIBRARY NAMES lz4)
+if(LZ4_LIBRARY)
+  target_link_libraries(gluten PRIVATE ${LZ4_LIBRARY})
+endif()
+find_library(ZSTD_LIBRARY NAMES zstd)
+if(ZSTD_LIBRARY)
+  target_link_libraries(gluten PRIVATE ${ZSTD_LIBRARY})
+endif()
+find_library(SNAPPY_LIBRARY NAMES snappy)
+if(SNAPPY_LIBRARY)
+  target_link_libraries(gluten PRIVATE ${SNAPPY_LIBRARY})
+endif()
+
 install(TARGETS gluten DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/resources/libhdfs.so
         DESTINATION ${LIBHDFS3_DESTINATION})
