@@ -62,6 +62,9 @@ class VeloxConfig(conf: SQLConf) extends GlutenConfig(conf) {
   def enableVeloxFlushablePartialAggregation: Boolean =
     getConf(VELOX_FLUSHABLE_PARTIAL_AGGREGATION_ENABLED)
 
+  def preShufflePartialAggStatsFile: Option[String] =
+    getConf(PRE_SHUFFLE_PARTIAL_AGG_STATS_FILE)
+
   def enableBroadcastBuildRelationInOffheap: Boolean =
     getConf(VELOX_BROADCAST_BUILD_RELATION_USE_OFFHEAP)
 
@@ -436,6 +439,18 @@ object VeloxConfig extends ConfigRegistry {
       )
       .booleanConf
       .createWithDefault(true)
+
+  val PRE_SHUFFLE_PARTIAL_AGG_STATS_FILE =
+    buildConf("spark.gluten.sql.columnar.preShufflePartialAgg.statsFile")
+      .doc(
+        "Path (driver-local) to a TSV file supplying rowCount and per-column NDV that rules " +
+          "may consult when deciding whether to insert extra pre-shuffle work. Format per " +
+          "line: `table<TAB>rowCount<TAB>col1:ndv1,col2:ndv2`. Bypasses the Spark catalog and " +
+          "logicalLink lookup so the loader works whether tables are loaded as tempViews or " +
+          "as Hive tables. When unset, no stats are loaded."
+      )
+      .stringConf
+      .createOptional
 
   val MAX_PARTIAL_AGGREGATION_MEMORY =
     buildConf("spark.gluten.sql.columnar.backend.velox.maxPartialAggregationMemory")
