@@ -119,6 +119,7 @@ object VeloxRuleApi {
     injector.injectPostTransform(_ => EliminateLocalSort)
     injector.injectPostTransform(_ => CollapseProjectExecTransformer)
     injector.injectPostTransform(c => FlushableHashAggregateRule.apply(c.session))
+    injector.injectPostTransform(c => InsertPreShufflePartialAggRule.apply(c.session))
     injector.injectPostTransform(_ => CollectLimitTransformerRule())
     injector.injectPostTransform(_ => CollectTailTransformerRule())
     injector.injectPostTransform(_ => V2WritePostRule())

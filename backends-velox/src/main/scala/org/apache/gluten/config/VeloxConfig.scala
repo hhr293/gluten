@@ -62,6 +62,18 @@ class VeloxConfig(conf: SQLConf) extends GlutenConfig(conf) {
   def enableVeloxFlushablePartialAggregation: Boolean =
     getConf(VELOX_FLUSHABLE_PARTIAL_AGGREGATION_ENABLED)
 
+  def enablePreShufflePartialAgg: Boolean =
+    getConf(PRE_SHUFFLE_PARTIAL_AGG_ENABLED)
+
+  def preShufflePartialAggMinRows: Long =
+    getConf(PRE_SHUFFLE_PARTIAL_AGG_MIN_ROWS)
+
+  def preShufflePartialAggMinRatio: Double =
+    getConf(PRE_SHUFFLE_PARTIAL_AGG_MIN_RATIO)
+
+  def preShufflePartialAggRequireStats: Boolean =
+    getConf(PRE_SHUFFLE_PARTIAL_AGG_REQUIRE_STATS)
+
   def preShufflePartialAggStatsFile: Option[String] =
     getConf(PRE_SHUFFLE_PARTIAL_AGG_STATS_FILE)
 
@@ -451,6 +463,47 @@ object VeloxConfig extends ConfigRegistry {
       )
       .stringConf
       .createOptional
+
+  val PRE_SHUFFLE_PARTIAL_AGG_ENABLED =
+    buildConf("spark.gluten.sql.columnar.preShufflePartialAgg.enabled")
+      .doc(
+        "When true, insert a FlushableHashAggregateExecTransformer before a ColumnarShuffle " +
+          "whose payload is only its partitioning keys and whose subtree contains a join. " +
+          "This pre-reduces rows before the shuffle for INTERSECT/leftsemi-style patterns " +
+          "where the consumer only needs distinct key combinations. Default false."
+      )
+      .booleanConf
+      .createWithDefault(false)
+
+  val PRE_SHUFFLE_PARTIAL_AGG_MIN_ROWS =
+    buildConf("spark.gluten.sql.columnar.preShufflePartialAgg.minRows")
+      .doc(
+        "Minimum estimated row count of the shuffle subtree required to insert a pre-shuffle " +
+          "partial aggregate. Rows below this threshold do not benefit from dedup. " +
+          "Only used when catalog statistics are available for the subtree."
+      )
+      .longConf
+      .createWithDefault(10000000L)
+
+  val PRE_SHUFFLE_PARTIAL_AGG_MIN_RATIO =
+    buildConf("spark.gluten.sql.columnar.preShufflePartialAgg.minRatio")
+      .doc(
+        "Minimum estimated rows / groupNdv ratio required to insert a pre-shuffle partial " +
+          "aggregate. Ratio approximates the average duplication per key; low ratios mean " +
+          "dedup will not compress the payload enough to pay for the hash-table build."
+      )
+      .doubleConf
+      .createWithDefault(4.0)
+
+  val PRE_SHUFFLE_PARTIAL_AGG_REQUIRE_STATS =
+    buildConf("spark.gluten.sql.columnar.preShufflePartialAgg.requireStats")
+      .doc(
+        "When true, skip pre-shuffle partial aggregate insertion whenever row count or NDV " +
+          "statistics are missing for the shuffle subtree. When false (default), fall back " +
+          "to the structural heuristic (payload == partition key + subtree contains join)."
+      )
+      .booleanConf
+      .createWithDefault(false)
 
   val MAX_PARTIAL_AGGREGATION_MEMORY =
     buildConf("spark.gluten.sql.columnar.backend.velox.maxPartialAggregationMemory")
