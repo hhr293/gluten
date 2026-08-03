@@ -187,6 +187,21 @@ class SubstraitToVeloxPlanConverter {
     return splitInfoMap_;
   }
 
+  /// True if any AggregateRel in the converted plan carried "stringKeyDedup=1" in its
+  /// advisory extension. Used by VeloxRuntime to flip the per-stage query config so Velox's
+  /// partial HashAggregation enables RowContainer string-key dedup.
+  bool anyStringKeyDedup() const {
+    return anyStringKeyDedup_;
+  }
+
+  /// True if any AggregateRel in the converted plan carried "hashCacheInSlot=1" in its
+  /// advisory extension. Used by VeloxRuntime to flip the per-stage query config so Velox's
+  /// partial HashAggregation caches computed hashes in the normalized-key slot after the
+  /// table transitions to kHash mode.
+  bool anyHashCacheInSlot() const {
+    return anyHashCacheInSlot_;
+  }
+
   /// Used to insert certain plan node as input. The plan node
   /// id will start from the setted one.
   void insertInputNode(uint64_t inputIdx, const std::shared_ptr<const core::PlanNode>& inputNode, int planNodeId) {
@@ -297,6 +312,12 @@ class SubstraitToVeloxPlanConverter {
 
   int32_t splitInfoIdx_{0};
   std::vector<std::shared_ptr<SplitInfo>> splitInfos_;
+
+  /// Set to true when any AggregateRel is converted with "stringKeyDedup=1" advisory.
+  bool anyStringKeyDedup_ = false;
+
+  /// Set to true when any AggregateRel is converted with "hashCacheInSlot=1" advisory.
+  bool anyHashCacheInSlot_ = false;
 
   /// The Expression converter used to convert Substrait representations into
   /// Velox expressions.

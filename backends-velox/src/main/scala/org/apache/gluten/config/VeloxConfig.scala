@@ -77,6 +77,18 @@ class VeloxConfig(conf: SQLConf) extends GlutenConfig(conf) {
   def preShufflePartialAggStatsFile: Option[String] =
     getConf(PRE_SHUFFLE_PARTIAL_AGG_STATS_FILE)
 
+  def stringKeyDedupEnabled: Boolean = getConf(STRING_KEY_DEDUP_ENABLED)
+
+  def stringKeyDedupMinRows: Long = getConf(STRING_KEY_DEDUP_MIN_ROWS)
+
+  def stringKeyDedupMinRatio: Double = getConf(STRING_KEY_DEDUP_MIN_RATIO)
+
+  def hashCacheInSlotEnabled: Boolean = getConf(HASH_CACHE_IN_SLOT_ENABLED)
+
+  def hashCacheInSlotMinRows: Long = getConf(HASH_CACHE_IN_SLOT_MIN_ROWS)
+
+  def hashCacheInSlotMinNdv: Long = getConf(HASH_CACHE_IN_SLOT_MIN_NDV)
+
   def enableBroadcastBuildRelationInOffheap: Boolean =
     getConf(VELOX_BROADCAST_BUILD_RELATION_USE_OFFHEAP)
 
@@ -504,6 +516,73 @@ object VeloxConfig extends ConfigRegistry {
       )
       .booleanConf
       .createWithDefault(false)
+
+  val STRING_KEY_DEDUP_ENABLED =
+    buildConf("spark.gluten.sql.columnar.stringKeyDedup.enabled")
+      .doc(
+        "When true, Velox HashAggregate deduplicates non-inline (>12 byte) varchar/varbinary " +
+          "grouping key payloads across rows: a per-key F14FastSet holds the canonical " +
+          "HashStringAllocator copy and later rows reuse it instead of calling " +
+          "copyMultipart again. Saves memcpy + free traffic on aggregations with many " +
+          "duplicates on long string keys. Default false; enable when off-line stats " +
+          "(rowCount / NDV / avgLen) show a partial HashAgg with avgLen > 12 and " +
+          "NDV/inputRows below a few thousandths."
+      )
+      .booleanConf
+      .createWithDefault(false)
+
+  val STRING_KEY_DEDUP_MIN_ROWS =
+    buildConf("spark.gluten.sql.columnar.stringKeyDedup.minRows")
+      .doc(
+        "Minimum input rowCount (max across a partial HashAgg's subtree scans) for " +
+          "EnableStringKeyDedupRule to consider enabling string-key dedup. Partial aggs " +
+          "reading fewer rows are unlikely to recoup the F14 set overhead."
+      )
+      .longConf
+      .createWithDefault(10000000L)
+
+  val STRING_KEY_DEDUP_MIN_RATIO =
+    buildConf("spark.gluten.sql.columnar.stringKeyDedup.minRatio")
+      .doc(
+        "Minimum rowCount / groupNdv ratio for EnableStringKeyDedupRule to enable string-key " +
+          "dedup for the current query. Ratio is computed per partial HashAgg from the driver-" +
+          "local stats TSV (same source as preShufflePartialAgg.statsFile). Higher means the " +
+          "rule is more conservative -- only kicks in when duplicate density is high."
+      )
+      .doubleConf
+      .createWithDefault(200.0)
+
+  val HASH_CACHE_IN_SLOT_ENABLED =
+    buildConf("spark.gluten.sql.columnar.backend.velox.hashCacheInSlot.enabled")
+      .doc(
+        "Session-wide escape hatch for the hash-cache-in-slot patch. When true, ALL partial " +
+          "HashAggregations cache computed hashes in the normalized-key slot after transitioning " +
+          "to kHash mode. Normally left false; EnableHashCacheInSlotRule tags individual " +
+          "operators via substrait advisory extension instead. Setting this true bypasses the " +
+          "NDV-driven gate and pays +8B/row on every partial HashAgg in the query."
+      )
+      .booleanConf
+      .createWithDefault(false)
+
+  val HASH_CACHE_IN_SLOT_MIN_ROWS =
+    buildConf("spark.gluten.sql.columnar.backend.velox.hashCacheInSlot.minRows")
+      .doc(
+        "Minimum input rowCount for EnableHashCacheInSlotRule to enable the hash-cache-in-slot " +
+          "patch on a partial HashAgg. Below this, the +8B/row footprint hurts more than the " +
+          "saved rehash time."
+      )
+      .longConf
+      .createWithDefault(1000000L)
+
+  val HASH_CACHE_IN_SLOT_MIN_NDV =
+    buildConf("spark.gluten.sql.columnar.backend.velox.hashCacheInSlot.minNdv")
+      .doc(
+        "Minimum estimated group NDV for EnableHashCacheInSlotRule. Velox only transitions " +
+          "HashTable to kHash mode past ~100k distinct values (kMaxDistinct); below that the " +
+          "table stays in kNormalizedKey or kArray and the slot cache is never read."
+      )
+      .longConf
+      .createWithDefault(100000L)
 
   val MAX_PARTIAL_AGGREGATION_MEMORY =
     buildConf("spark.gluten.sql.columnar.backend.velox.maxPartialAggregationMemory")

@@ -120,7 +120,9 @@ WholeStageResultIterator::WholeStageResultIterator(
     VeloxConnectorIds connectorIds,
     const std::string spillDir,
     const std::shared_ptr<facebook::velox::config::ConfigBase>& veloxCfg,
-    const SparkTaskInfo& taskInfo)
+    const SparkTaskInfo& taskInfo,
+    bool stringKeyDedupOverride,
+    bool hashCacheInSlotOverride)
     : memoryManager_(memoryManager),
       veloxCfg_(veloxCfg),
 #ifdef GLUTEN_ENABLE_GPU
@@ -133,7 +135,9 @@ WholeStageResultIterator::WholeStageResultIterator(
       connectorIds_(std::move(connectorIds)),
       scanNodeIds_(scanNodeIds),
       scanInfos_(scanInfos),
-      streamIds_(streamIds) {
+      streamIds_(streamIds),
+      stringKeyDedupOverride_(stringKeyDedupOverride),
+      hashCacheInSlotOverride_(hashCacheInSlotOverride) {
   spillStrategy_ = veloxCfg_->get<std::string>(kSpillStrategy, kSpillStrategyDefaultValue);
   getOrderedNodeIds(veloxPlan_, orderedNodeIds_);
 
@@ -670,6 +674,10 @@ std::unordered_map<std::string, std::string> WholeStageResultIterator::getQueryC
           std::to_string(veloxCfg_->get<int32_t>(kAbandonPartialAggregationMinPct, 90));
       configs[velox::core::QueryConfig::kAbandonPartialAggregationMinRows] =
           std::to_string(veloxCfg_->get<int32_t>(kAbandonPartialAggregationMinRows, 100000));
+      configs[velox::core::QueryConfig::kStringKeyDedupEnabled] = std::to_string(
+          stringKeyDedupOverride_ || veloxCfg_->get<bool>(kStringKeyDedupEnabled, false));
+      configs[velox::core::QueryConfig::kHashCacheInSlotEnabled] = std::to_string(
+          hashCacheInSlotOverride_ || veloxCfg_->get<bool>(kHashCacheInSlotEnabled, false));
     }
     // Spill configs
     if (spillStrategy_ == "none") {

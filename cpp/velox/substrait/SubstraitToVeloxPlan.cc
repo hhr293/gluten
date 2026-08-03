@@ -611,6 +611,16 @@ core::PlanNodePtr SubstraitToVeloxPlanConverter::toVeloxPlan(const ::substrait::
     preGroupingExprs.insert(preGroupingExprs.begin(), veloxGroupingExprs.begin(), veloxGroupingExprs.end());
   }
 
+  if (aggRel.has_advanced_extension() &&
+      SubstraitParser::configSetInOptimization(aggRel.advanced_extension(), "stringKeyDedup=")) {
+    anyStringKeyDedup_ = true;
+  }
+
+  if (aggRel.has_advanced_extension() &&
+      SubstraitParser::configSetInOptimization(aggRel.advanced_extension(), "hashCacheInSlot=")) {
+    anyHashCacheInSlot_ = true;
+  }
+
   // Get the output names of Aggregation.
   std::vector<std::string> aggOutNames;
   aggOutNames.reserve(aggRel.measures().size());

@@ -175,10 +175,22 @@ abstract class HashAggregateExecTransformer(
   // to be read.
   protected def allowFlush: Boolean
 
+  // Whether Velox's partial HashAggregation should enable string-key dedup for this operator.
+  // See EnableStringKeyDedupRule for the driver-side decision logic.
+  protected def stringKeyDedupEnabled: Boolean = false
+
+  // Whether Velox's partial HashAggregation should cache computed hashes in row[-1] after the
+  // table transitions to kHash mode. See EnableHashCacheInSlotRule for the gate.
+  protected def hashCacheInSlotEnabled: Boolean = false
+
   private def formatExtOptimizationString(isStreaming: Boolean): String = {
     val isStreamingStr = if (isStreaming) "1" else "0"
     val allowFlushStr = if (allowFlush) "1" else "0"
-    s"isStreaming=$isStreamingStr\nallowFlush=$allowFlushStr\n"
+    val stringKeyDedupStr = if (stringKeyDedupEnabled) "1" else "0"
+    val hashCacheInSlotStr = if (hashCacheInSlotEnabled) "1" else "0"
+    s"isStreaming=$isStreamingStr\nallowFlush=$allowFlushStr\n" +
+      s"stringKeyDedup=$stringKeyDedupStr\n" +
+      s"hashCacheInSlot=$hashCacheInSlotStr\n"
   }
 
   // Create aggregate function node.
@@ -682,6 +694,78 @@ case class FlushableHashAggregateExecTransformer(
 
   override def verboseString(maxFields: Int): String =
     s"Flushable${super.verboseString(maxFields)}"
+
+  override protected def withNewChildInternal(newChild: SparkPlan): HashAggregateExecTransformer = {
+    copy(child = newChild)
+  }
+}
+
+// Flushable partial aggregation whose Velox HashAggregation has string-key dedup enabled.
+// Emitted by EnableStringKeyDedupRule when the stats-driven gate passes for a FlushableHash
+// agg. Behaves identically to FlushableHashAggregateExecTransformer at the Spark level; only
+// the substrait advisory extension differs so the executor-side plan converter can flip
+// spark.gluten.sql.columnar.stringKeyDedup.enabled for this stage.
+case class FlushableStringKeyDedupHashAggregateExecTransformer(
+    requiredChildDistributionExpressions: Option[Seq[Expression]],
+    groupingExpressions: Seq[NamedExpression],
+    aggregateExpressions: Seq[AggregateExpression],
+    aggregateAttributes: Seq[Attribute],
+    initialInputBufferOffset: Int,
+    resultExpressions: Seq[NamedExpression],
+    child: SparkPlan)
+  extends HashAggregateExecTransformer(
+    requiredChildDistributionExpressions,
+    groupingExpressions,
+    aggregateExpressions,
+    aggregateAttributes,
+    initialInputBufferOffset,
+    resultExpressions,
+    child) {
+
+  override protected def allowFlush: Boolean = true
+
+  override protected def stringKeyDedupEnabled: Boolean = true
+
+  override def simpleString(maxFields: Int): String =
+    s"FlushableStringKeyDedup${super.simpleString(maxFields)}"
+
+  override def verboseString(maxFields: Int): String =
+    s"FlushableStringKeyDedup${super.verboseString(maxFields)}"
+
+  override protected def withNewChildInternal(newChild: SparkPlan): HashAggregateExecTransformer = {
+    copy(child = newChild)
+  }
+}
+
+// Flushable partial aggregation whose Velox HashAggregation caches the hash in the
+// normalized-key slot after transitioning to kHash mode. Emitted by
+// EnableHashCacheInSlotRule when the NDV-driven gate passes.
+case class FlushableHashCacheInSlotHashAggregateExecTransformer(
+    requiredChildDistributionExpressions: Option[Seq[Expression]],
+    groupingExpressions: Seq[NamedExpression],
+    aggregateExpressions: Seq[AggregateExpression],
+    aggregateAttributes: Seq[Attribute],
+    initialInputBufferOffset: Int,
+    resultExpressions: Seq[NamedExpression],
+    child: SparkPlan)
+  extends HashAggregateExecTransformer(
+    requiredChildDistributionExpressions,
+    groupingExpressions,
+    aggregateExpressions,
+    aggregateAttributes,
+    initialInputBufferOffset,
+    resultExpressions,
+    child) {
+
+  override protected def allowFlush: Boolean = true
+
+  override protected def hashCacheInSlotEnabled: Boolean = true
+
+  override def simpleString(maxFields: Int): String =
+    s"FlushableHashCacheInSlot${super.simpleString(maxFields)}"
+
+  override def verboseString(maxFields: Int): String =
+    s"FlushableHashCacheInSlot${super.verboseString(maxFields)}"
 
   override protected def withNewChildInternal(newChild: SparkPlan): HashAggregateExecTransformer = {
     copy(child = newChild)

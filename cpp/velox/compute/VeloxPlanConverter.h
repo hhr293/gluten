@@ -53,6 +53,14 @@ class VeloxPlanConverter {
     return substraitVeloxPlanConverter_.remainingInputIterators();
   }
 
+  bool anyStringKeyDedup() const {
+    return substraitVeloxPlanConverter_.anyStringKeyDedup();
+  }
+
+  bool anyHashCacheInSlot() const {
+    return substraitVeloxPlanConverter_.anyHashCacheInSlot();
+  }
+
  private:
   bool validationMode_;
 

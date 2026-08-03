@@ -463,6 +463,8 @@ std::shared_ptr<ResultIterator> VeloxRuntime::createResultIterator(
   // Separate the scan ids and stream ids, and get the scan infos.
   getInfoAndIds(veloxPlanConverter.splitInfos(), veloxPlan_->leafPlanNodeIds(), scanInfos, scanIds, streamIds);
 
+  bool stringKeyDedupOverride = veloxPlanConverter.anyStringKeyDedup();
+  bool hashCacheInSlotOverride = veloxPlanConverter.anyHashCacheInSlot();
   auto wholeStageIter = std::make_unique<WholeStageResultIterator>(
       memoryManager(),
       veloxPlan_,
@@ -474,7 +476,9 @@ std::shared_ptr<ResultIterator> VeloxRuntime::createResultIterator(
       connectorIds_,
       spillDir,
       veloxCfg_,
-      taskInfo_.has_value() ? taskInfo_.value() : SparkTaskInfo{});
+      taskInfo_.has_value() ? taskInfo_.value() : SparkTaskInfo{},
+      stringKeyDedupOverride,
+      hashCacheInSlotOverride);
 
   auto remainingInputIterators = veloxPlanConverter.remainingInputIterators();
   if (!remainingInputIterators.empty()) {

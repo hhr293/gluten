@@ -49,7 +49,9 @@ class WholeStageResultIterator : public SplitAwareColumnarBatchIterator {
       VeloxConnectorIds connectorIds,
       const std::string spillDir,
       const std::shared_ptr<facebook::velox::config::ConfigBase>& veloxCfg,
-      const SparkTaskInfo& taskInfo);
+      const SparkTaskInfo& taskInfo,
+      bool stringKeyDedupOverride = false,
+      bool hashCacheInSlotOverride = false);
 
   virtual ~WholeStageResultIterator() {
     if (task_ != nullptr) {
@@ -163,6 +165,16 @@ class WholeStageResultIterator : public SplitAwareColumnarBatchIterator {
   bool allSplitsAdded_ = false;
 
   int64_t loadLazyVectorTime_ = 0;
+
+  /// Set by VeloxRuntime when the substrait plan for this stage contains a
+  /// FlushableStringKeyDedupHashAggregateExecTransformer. Overrides the session-level
+  /// spark.gluten.sql.columnar.stringKeyDedup.enabled to true for this stage only.
+  bool stringKeyDedupOverride_ = false;
+
+  /// Set by VeloxRuntime when the substrait plan for this stage contains a
+  /// FlushableHashCacheInSlotHashAggregateExecTransformer. Overrides the session-level
+  /// spark.gluten.sql.columnar.backend.velox.hashCacheInSlot.enabled to true for this stage.
+  bool hashCacheInSlotOverride_ = false;
 };
 
 } // namespace gluten

@@ -66,6 +66,8 @@ const std::string kAbandonPartialAggregationMinPct =
     "spark.gluten.sql.columnar.backend.velox.abandonPartialAggregationMinPct";
 const std::string kAbandonPartialAggregationMinRows =
     "spark.gluten.sql.columnar.backend.velox.abandonPartialAggregationMinRows";
+const std::string kStringKeyDedupEnabled = "spark.gluten.sql.columnar.stringKeyDedup.enabled";
+const std::string kHashCacheInSlotEnabled = "spark.gluten.sql.columnar.backend.velox.hashCacheInSlot.enabled";
 
 // hashmap build
 const std::string kMinTableRowsForParallelJoinBuild = "spark.gluten.velox.minTableRowsForParallelJoinBuild";
