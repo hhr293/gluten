@@ -113,39 +113,40 @@ void encode(const uint64_t* __restrict in, uint64_t* __restrict out, uint64_t ba
     constexpr uint64_t kMask = bitmask<BW>();
     const size_t nGroups = nValues / kLanes;
 
-    uint64_t tmp[kLanes] = {};
+    // The accumulator is a vector rather than a uint64_t[kLanes]: as an array it is a loop-carried
+    // read-modify-write that gcc refuses to vectorize, leaving 4x shlx + 4x or per group. All lanes
+    // share one bitPos, so the shift is a single vector shift by a scalar count -- unlike decode,
+    // which needs a per-lane variable shift.
+    typedef uint64_t U64xN __attribute__((vector_size(kLanes * sizeof(uint64_t))));
+    // GCC pads a short vector initializer with zeroes rather than rejecting it, so a change to
+    // kLanes would silently mask off the extra lanes instead of failing to build.
+    static_assert(kLanes == 4, "vbase and vmask below are written as four-element initializers");
+
+    const U64xN vbase = {base, base, base, base};
+    const U64xN vmask = {kMask, kMask, kMask, kMask};
+
+    U64xN tmp = {};
     size_t outOffset = 0;
     unsigned bitPos = 0;
 
     for (size_t g = 0; g < nGroups; ++g) {
-#if defined(__clang__)
-#pragma clang loop vectorize(enable) interleave(enable)
-#elif defined(__GNUC__)
-#pragma GCC ivdep
-#endif
-      for (unsigned lane = 0; lane < kLanes; ++lane) {
-        uint64_t val = (in[g * kLanes + lane] - base) & kMask;
-        tmp[lane] |= val << bitPos;
-      }
+      U64xN v;
+      std::memcpy(&v, in + g * kLanes, sizeof(v));
+      const U64xN val = (v - vbase) & vmask;
+      tmp |= val << bitPos;
 
       unsigned newBitPos = bitPos + BW;
 
       if (newBitPos >= 64) {
-        for (unsigned lane = 0; lane < kLanes; ++lane) {
-          out[outOffset + lane] = tmp[lane];
-        }
+        std::memcpy(out + outOffset, &tmp, sizeof(tmp));
         outOffset += kLanes;
 
         unsigned overflow = newBitPos - 64;
         if (overflow > 0) {
-          for (unsigned lane = 0; lane < kLanes; ++lane) {
-            uint64_t val = (in[g * kLanes + lane] - base) & kMask;
-            tmp[lane] = val >> (BW - overflow);
-          }
+          // Reuses val; the scalar version reloaded and re-masked the same group here.
+          tmp = val >> (BW - overflow);
         } else {
-          for (unsigned lane = 0; lane < kLanes; ++lane) {
-            tmp[lane] = 0;
-          }
+          tmp = U64xN{};
         }
         bitPos = overflow;
       } else {
@@ -154,9 +155,7 @@ void encode(const uint64_t* __restrict in, uint64_t* __restrict out, uint64_t ba
     }
 
     if (bitPos > 0) {
-      for (unsigned lane = 0; lane < kLanes; ++lane) {
-        out[outOffset + lane] = tmp[lane];
-      }
+      std::memcpy(out + outOffset, &tmp, sizeof(tmp));
     }
   }
 }
