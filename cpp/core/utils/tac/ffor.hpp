@@ -57,6 +57,12 @@
 #include <cstring>
 #include <vector>
 
+// The split-half min/max scan below needs GCC vector extensions and a little-endian layout, which
+// puts every value's low half in an even lane.  x86-64 only: it is the only target measured.
+#if defined(__GNUC__) && defined(__x86_64__) && defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#define GLUTEN_FFOR_SPLIT_MINMAX 1
+#endif
+
 namespace gluten {
 namespace ffor {
 
@@ -279,6 +285,164 @@ inline void decodeRt(const uint64_t* in, uint64_t* out, uint64_t base, size_t n,
   detail::kDecodeTable[bw](in, out, base, n);
 }
 
+// Kept noinline, and with the running min/max in locals stored once at the end, because both are
+// load-bearing for codegen: inlined into analyze() gcc 13 gave up vectorizing this loop and emitted a
+// branchy scalar one, and writing through mn / mx inside the loop makes it assume they alias data and
+// refuse to vectorize at all.  One call per block is negligible next to the scan itself.
+__attribute__((noinline)) inline void minMaxScanScalar(const uint64_t* data, size_t n, uint64_t& mn, uint64_t& mx) {
+  uint64_t low = data[0];
+  uint64_t high = data[0];
+  for (size_t i = 1; i < n; ++i) {
+    if (data[i] < low) {
+      low = data[i];
+    }
+    if (data[i] > high) {
+      high = data[i];
+    }
+  }
+  mn = low;
+  mx = high;
+}
+
+#if defined(GLUTEN_FFOR_SPLIT_MINMAX)
+// Folds a lane array in halves down to two, which preserves the even/odd split: lane 0 ends up with
+// the reduction over every low half and lane 1 with the reduction over every high half.
+inline void foldLaneHalves(uint32_t* mins, uint32_t* maxs, unsigned lanes) {
+  for (unsigned half = lanes / 2; half >= 2; half /= 2) {
+    for (unsigned k = 0; k < half; ++k) {
+      if (mins[k + half] < mins[k]) {
+        mins[k] = mins[k + half];
+      }
+      if (maxs[k + half] > maxs[k]) {
+        maxs[k] = maxs[k + half];
+      }
+    }
+  }
+}
+
+// Settles the one shape the split scan cannot: high halves taking exactly two adjacent values.
+//
+// Not a rescan -- the true min's high half is necessarily highMin, so the missing quantity is just
+// min{low : high == highMin}, another lane-wise reduction over the same bytes.  Masking is free in
+// lane space: a non-matching value contributes the identity instead.  Odd lanes come out zero from
+// the shift and so compare equal to the splat, staying unmasked; only even lanes are read out.
+__attribute__((noinline)) inline void
+minMaxRefineStraddle(const uint64_t* data, size_t n, uint32_t highMin, uint32_t highMax, uint64_t& mn, uint64_t& mx) {
+  constexpr unsigned kWordLanes = 8;
+  typedef uint32_t U32xN __attribute__((vector_size(kWordLanes * sizeof(uint32_t))));
+  // The same bytes viewed as 64-bit lanes (half as many), used only to shift each high half down.
+  typedef uint64_t U64View __attribute__((vector_size(kWordLanes * sizeof(uint32_t))));
+
+  const size_t numWords = n * 2;
+  const char* bytes = reinterpret_cast<const char*>(data);
+
+  const U32xN highMinV = {highMin, 0, highMin, 0, highMin, 0, highMin, 0};
+  const U32xN highMaxV = {highMax, 0, highMax, 0, highMax, 0, highMax, 0};
+  const U32xN ones = {~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
+  const U32xN zeros = {0, 0, 0, 0, 0, 0, 0, 0};
+
+  U32xN accMin = ones;
+  U32xN accMax = zeros;
+
+  size_t i = 0;
+  for (; i + kWordLanes <= numWords; i += kWordLanes) {
+    U32xN v;
+    std::memcpy(&v, bytes + i * sizeof(uint32_t), sizeof(v));
+    // Vector reinterpret rather than __builtin_shuffle: the latter is a GCC extension clang rejects.
+    const U32xN high = (U32xN)((U64View)v >> 32);
+    const U32xN candMin = high == highMinV ? v : ones;
+    const U32xN candMax = high == highMaxV ? v : zeros;
+    accMin = accMin < candMin ? accMin : candMin;
+    accMax = accMax > candMax ? accMax : candMax;
+  }
+
+  uint32_t mins[kWordLanes];
+  uint32_t maxs[kWordLanes];
+  std::memcpy(mins, &accMin, sizeof(mins));
+  std::memcpy(maxs, &accMax, sizeof(maxs));
+  foldLaneHalves(mins, maxs, kWordLanes);
+  uint32_t lowMin = mins[0];
+  uint32_t lowMax = maxs[0];
+
+  for (; i < numWords; i += 2) {
+    const uint64_t value = data[i / 2];
+    const uint32_t lowWord = static_cast<uint32_t>(value);
+    const uint32_t highWord = static_cast<uint32_t>(value >> 32);
+    if (highWord == highMin && lowWord < lowMin) {
+      lowMin = lowWord;
+    }
+    if (highWord == highMax && lowWord > lowMax) {
+      lowMax = lowWord;
+    }
+  }
+
+  // Both halves now come from a single element, so these are the exact 64-bit min and max.
+  mn = (static_cast<uint64_t>(highMin) << 32) | lowMin;
+  mx = (static_cast<uint64_t>(highMax) << 32) | lowMax;
+}
+
+// Scans the block as uint32: there is no unsigned 64-bit min/max below AVX-512, and emulating it
+// puts a variable blend on the loop-carried chain.  min is lane-wise and little-endian puts every
+// low half in an even lane, so one 32-bit accumulator reduces both halves at once.
+//
+// Recombining is exact when all high halves agree, otherwise conservative in the safe direction,
+// which is all analyze() needs (base <= every value, range fitting in bw).  Only a gap of 1 between
+// highMin and highMax pays a second pass: any larger gap is provably within one bit of the exact
+// range, while a gap of 1 can turn 1 true bit into 33.
+//
+// One accumulator: more only help when streaming from DRAM, where this loop is bandwidth-capped.
+__attribute__((noinline)) inline void minMaxScanSplit(const uint64_t* data, size_t n, uint64_t& mn, uint64_t& mx) {
+  constexpr unsigned kWordLanes = 8;
+  typedef uint32_t U32xN __attribute__((vector_size(kWordLanes * sizeof(uint32_t))));
+
+  const size_t numWords = n * 2;
+  const char* bytes = reinterpret_cast<const char*>(data);
+
+  U32xN accMin = {~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
+  U32xN accMax = {0, 0, 0, 0, 0, 0, 0, 0};
+
+  size_t i = 0;
+  for (; i + kWordLanes <= numWords; i += kWordLanes) {
+    U32xN v;
+    std::memcpy(&v, bytes + i * sizeof(uint32_t), sizeof(v));
+    accMin = accMin < v ? accMin : v;
+    accMax = accMax > v ? accMax : v;
+  }
+
+  uint32_t mins[kWordLanes];
+  uint32_t maxs[kWordLanes];
+  std::memcpy(mins, &accMin, sizeof(mins));
+  std::memcpy(maxs, &accMax, sizeof(maxs));
+  // Folded in lane space instead of deinterleaved into scalars: every stride stays even, so lane 0
+  // still holds low halves and lane 1 high halves when the fold ends.
+  foldLaneHalves(mins, maxs, kWordLanes);
+  uint32_t lowMin = mins[0];
+  uint32_t lowMax = maxs[0];
+  uint32_t highMin = mins[1];
+  uint32_t highMax = maxs[1];
+
+  // i is a multiple of kWordLanes, so the tail still starts on a low half.
+  for (; i < numWords; i += 2) {
+    const uint64_t value = data[i / 2];
+    const uint32_t lowWord = static_cast<uint32_t>(value);
+    const uint32_t highWord = static_cast<uint32_t>(value >> 32);
+    lowMin = lowWord < lowMin ? lowWord : lowMin;
+    lowMax = lowWord > lowMax ? lowWord : lowMax;
+    highMin = highWord < highMin ? highWord : highMin;
+    highMax = highWord > highMax ? highWord : highMax;
+  }
+
+  if (highMax - highMin == 1) {
+    minMaxRefineStraddle(data, n, highMin, highMax, mn, mx);
+    return;
+  }
+
+  // d == 0 makes this exact; d >= 2 makes it the at-most-one-bit recombination argued above.
+  mn = (static_cast<uint64_t>(highMin) << 32) | lowMin;
+  mx = (static_cast<uint64_t>(highMax) << 32) | lowMax;
+}
+#endif // GLUTEN_FFOR_SPLIT_MINMAX
+
 // Compute base (min) and bitwidth for a vector of values.
 inline void analyze(const uint64_t* data, size_t n, uint64_t& base, unsigned& bw) {
   if (n == 0) {
@@ -286,16 +450,13 @@ inline void analyze(const uint64_t* data, size_t n, uint64_t& base, unsigned& bw
     bw = 0;
     return;
   }
-  uint64_t mn = data[0];
-  uint64_t mx = data[0];
-  for (size_t i = 1; i < n; ++i) {
-    if (data[i] < mn) {
-      mn = data[i];
-    }
-    if (data[i] > mx) {
-      mx = data[i];
-    }
-  }
+  uint64_t mn = 0;
+  uint64_t mx = 0;
+#if defined(GLUTEN_FFOR_SPLIT_MINMAX)
+  minMaxScanSplit(data, n, mn, mx);
+#else
+  minMaxScanScalar(data, n, mn, mx);
+#endif
   base = mn;
   uint64_t range = mx - mn;
   bw = 0;

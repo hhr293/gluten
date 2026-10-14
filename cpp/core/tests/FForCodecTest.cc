@@ -20,6 +20,7 @@
 #include "utils/tac/ffor.hpp"
 
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <cstring>
 #include <random>
 #include <vector>
@@ -199,6 +200,100 @@ TEST(FForTest, AnalyzeCorrectness) {
   analyze(data3, 4, b, w);
   ASSERT_EQ(b, uint64_t(0));
   ASSERT_EQ(w, 8u);
+}
+
+// The cases above all have a zero high half, so they never exercise a block whose values sit on both
+// sides of a 2^32 boundary.  On such a block the min/max scan reduces the two halves separately and
+// they can come from different elements, so what analyze() must guarantee is not exactness but that
+// every value still fits: base <= v for all v, and v - base < 2^bw.
+//
+// How close to exact it gets is decided by d, the number of 2^32 windows between the extremes.  At
+// d <= 1 the scan resolves the block exactly (d == 0 needs nothing; d == 1 is the one shape that would
+// otherwise lose up to 32 bits, so it takes a masked second pass).  At d >= 2 the halves are just
+// recombined, which the geometry caps at one extra bit of bw.
+TEST(FForTest, AnalyzeStraddlesTwoPow32) {
+  constexpr uint64_t kBoundary = uint64_t(1) << 32;
+  std::vector<std::vector<uint64_t>> shapes = {
+      // d == 1, a narrow range centred on the boundary: the shape the second pass exists for.
+      {kBoundary - 2, kBoundary - 1, kBoundary, kBoundary + 1},
+      // d == 1, one outlier a whole boundary above an otherwise narrow block.
+      {1000, 1001, 1002, kBoundary + 1003},
+      // d == 1 boundary pairs, in both orders.
+      {kBoundary, kBoundary - 1},
+      {kBoundary - 1, kBoundary},
+      // Mixed-sign BIGINT: -1 and 1 as unsigned are the two ends of the domain.
+      {~uint64_t(0), 1, 0, 7},
+      // The sign-extended high half of a small negative 128-bit value next to a small positive one.
+      {~uint64_t(0), ~uint64_t(0) - 5, 0, 3},
+      // d == 2 arranged so the recombination is as wrong as it can be: the smallest value carries the
+      // largest low half and the largest value the smallest, so both halves move a full window.  This
+      // is the worst case for the one-bit bound (exact 33 bits, recombined 34).
+      {kBoundary | 0xFFFFFFFF, 3 * kBoundary, 2 * kBoundary + 50, 2 * kBoundary + 60},
+  };
+
+  // Block-scale d == 1, so the vectorised body of the second pass runs as well as its scalar tail:
+  // 256 values is a full block, 259 leaves a 3-value tail.
+  std::mt19937_64 rng(999);
+  for (size_t n : {size_t(256), size_t(259)}) {
+    std::vector<uint64_t> data(n);
+    for (size_t i = 0; i < n; ++i) {
+      data[i] = kBoundary - 8 + (rng() & 0xF);
+    }
+    shapes.push_back(std::move(data));
+  }
+
+  for (const auto& data : shapes) {
+    uint64_t trueMin = data[0];
+    uint64_t trueMax = data[0];
+    for (uint64_t v : data) {
+      trueMin = std::min(trueMin, v);
+      trueMax = std::max(trueMax, v);
+    }
+    unsigned exactBw = 0;
+    for (uint64_t range = trueMax - trueMin; range > 0; range >>= 1) {
+      ++exactBw;
+    }
+    const uint64_t d = (trueMax >> 32) - (trueMin >> 32);
+
+    uint64_t base = 0;
+    unsigned bw = 0;
+    analyze(data.data(), data.size(), base, bw);
+
+    ASSERT_LE(base, trueMin);
+    ASSERT_GE(bw, exactBw);
+    ASSERT_LE(bw, 64u);
+    if (bw < 64) {
+      ASSERT_LT(trueMax - base, uint64_t(1) << bw);
+    }
+    if (d <= 1) {
+      ASSERT_EQ(base, trueMin) << "d=" << d;
+      ASSERT_EQ(bw, exactBw) << "d=" << d;
+    } else {
+      ASSERT_LE(bw, exactBw + 1) << "d=" << d;
+    }
+
+    // The fit property above is what makes the encoding lossless, so check that too.
+    compressRoundtrip(data.data(), data.size());
+  }
+}
+
+// Same straddle, but at block scale and through the public entry point, so the vectorised body and the
+// scalar tail both run over values on either side of the boundary.
+TEST(FForTest, Compress64StraddlesTwoPow32) {
+  constexpr uint64_t kBoundary = uint64_t(1) << 32;
+  std::mt19937_64 rng(12345);
+  for (size_t n : {size_t(3), size_t(17), size_t(256), size_t(259), size_t(1000)}) {
+    std::vector<uint64_t> data(n);
+    for (size_t i = 0; i < n; ++i) {
+      data[i] = kBoundary - 4 + (rng() & 0x7);
+    }
+    compressRoundtrip(data.data(), n);
+
+    for (size_t i = 0; i < n; ++i) {
+      data[i] = (i % 3 == 0) ? ~uint64_t(0) - (rng() & 0xFFFF) : (rng() & 0xFFFF);
+    }
+    compressRoundtrip(data.data(), n);
+  }
 }
 
 TEST(FForTest, CompressedSize) {
